@@ -25,30 +25,56 @@ def train_recognizer():
     cascade = load_face_cascade()
     images, labels, label_map = [], [], {}
     current_label = 0
+    skipped = []
+
     if os.path.exists(known_dir):
         for person_name in sorted(os.listdir(known_dir)):
             person_dir = os.path.join(known_dir, person_name)
             if not os.path.isdir(person_dir):
                 continue
-            label_map[current_label] = person_name.capitalize()
+
+            person_has_face = False
             for img_name in os.listdir(person_dir):
-                img = cv2.imread(os.path.join(person_dir, img_name), cv2.IMREAD_GRAYSCALE)
-                if img is None:
+                img_path = os.path.join(person_dir, img_name)
+                try:
+                    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                    if img is None or img.size == 0:
+                        skipped.append(img_name)
+                        continue
+
+                    faces = cascade.detectMultiScale(img, 1.1, 5)
+                    for (x, y, w, h) in faces:
+                        face_roi = img[y:y+h, x:x+w]
+                        if face_roi.size == 0:
+                            continue
+                        face_roi = cv2.resize(face_roi, (200, 200))
+                        images.append(face_roi)
+                        labels.append(current_label)
+                        person_has_face = True
+                except Exception:
+                    skipped.append(img_name)
                     continue
-                faces = cascade.detectMultiScale(img, 1.1, 5)
-                for (x, y, w, h) in faces:
-                    face_roi = cv2.resize(img[y:y+h, x:x+w], (200, 200))
-                    images.append(face_roi)
-                    labels.append(current_label)
-            current_label += 1
+
+            if person_has_face:
+                label_map[current_label] = person_name.capitalize()
+                current_label += 1
+
     recognizer = cv2.face.LBPHFaceRecognizer_create()
     if images:
         recognizer.train(images, np.array(labels))
-    return recognizer, label_map
+
+    return recognizer, label_map, skipped
 
 yolo_model = load_yolo()
 face_cascade = load_face_cascade()
-recognizer, label_map = train_recognizer()
+recognizer, label_map, skipped_files = train_recognizer()
+
+if skipped_files:
+    st.warning(f"⚠️ Skipped unreadable files during training: {', '.join(skipped_files)}")
+if not label_map:
+    st.warning("⚠️ No faces were learned. Check your known_faces folders and photos.")
+else:
+    st.info(f"✅ Learned faces for: {', '.join(label_map.values())}")
 
 friendly_names = {
     0: "Person", 1: "Bicycle", 2: "Car", 3: "Motorcycle", 5: "Bus",
@@ -74,7 +100,10 @@ def process_frame(frame):
                 gray = cv2.cvtColor(person_crop, cv2.COLOR_BGR2GRAY)
                 faces = face_cascade.detectMultiScale(gray, 1.1, 5)
                 for (fx, fy, fw, fh) in faces:
-                    face_roi = cv2.resize(gray[fy:fy+fh, fx:fx+fw], (200, 200))
+                    face_roi = gray[fy:fy+fh, fx:fx+fw]
+                    if face_roi.size == 0:
+                        continue
+                    face_roi = cv2.resize(face_roi, (200, 200))
                     if len(label_map) > 0:
                         try:
                             pred_label, confidence = recognizer.predict(face_roi)
